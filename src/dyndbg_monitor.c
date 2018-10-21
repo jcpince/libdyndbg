@@ -1,4 +1,6 @@
+#include <private/x86_debug_registers.h>
 #include <private/dyndbg_monitor.h>
+#include <dyndbg/dyndbg_us.h>
 
 #include <sys/ptrace.h>
 #include <sys/prctl.h>
@@ -16,7 +18,7 @@
 
 volatile bool interrupted = 0;
 
-static void on_monitored_death(int signum);
+static void on_monitored_signal(int signum);
 static void handle_request(ddbg_context_t *context, ddbg_monitor_request_t *request);
 
 ddbg_context_t *dyndebug_get_context(void)
@@ -29,21 +31,21 @@ ddbg_context_t *dyndebug_get_context(void)
 
     if (!context)
     {
-        fprintf(stderr, "Cannot create the dyndebug_get_manager singleton, "\
+        error_print("Cannot create the dyndebug_get_manager singleton, "\
             "malloc(%ld) failed -- %s\n", sizeof(ddbg_context_t), strerror(errno));
         return NULL;
     }
     if (pipe(context->monitor_pipe))
     {
         free(context);
-        fprintf(stderr, "Cannot create the monitor pipe -- %s\n", strerror(errno));
+        error_print("Cannot create the monitor pipe -- %s\n", strerror(errno));
         return NULL;
     }
 
     if (pipe(context->monitored_pipe))
     {
         free(context);
-        fprintf(stderr, "Cannot create the monitored pipe -- %s\n", strerror(errno));
+        error_print("Cannot create the monitored pipe -- %s\n", strerror(errno));
         return NULL;
     }
 
@@ -52,13 +54,13 @@ ddbg_context_t *dyndebug_get_context(void)
     if (context->monitored_pid == -1)
     {
         free(context);
-        fprintf(stderr, "Cannot fork our process for monitoring -- %s\n", strerror(errno));
+        error_print("Cannot fork our process for monitoring -- %s\n", strerror(errno));
         return NULL;
     }
 
     if (context->monitored_pid)
     {
-        fprintf(stdout, "Monitor process %d, debugged process %d\n",
+        debug_print("Monitor process %d, debugged process %d\n",
             context->monitor_pid, context->monitored_pid);
         dyndebug_run_monitor(context);
         free(context);
@@ -71,11 +73,13 @@ void dyndebug_run_monitor(ddbg_context_t *context)
 {
     char monitor_process_name[1024];
     extern char *__progname;
+    int rc;
+
     snprintf(monitor_process_name, 1024, DYNDBG_MONITOR_PREFIX"%s:%d",
         __progname, context->monitored_pid);
     if (prctl(PR_SET_NAME, (unsigned long) monitor_process_name) < 0)
     {
-        fprintf(stderr, "Dyndebug monitoring failed to change monitor name!\n");
+        error_print("Dyndebug monitoring failed to change monitor name!\n");
     }
 
     context->monitored_process_name = strdup(__progname);
@@ -85,16 +89,23 @@ void dyndebug_run_monitor(ddbg_context_t *context)
     close(context->monitored_pipe[0]);
     // fcntl(context->monitor_pipe[0], F_SETFL, O_NONBLOCK);
 
-    signal(SIGCHLD, on_monitored_death);
+    //signal(SIGCHLD, on_monitored_signal);
+    struct sigaction sa = {0};
+    sa.sa_handler = on_monitored_signal;
+    rc = sigaction(SIGCHLD, &sa, NULL);
+    debug_print("sigaction(%d, sa, NULL) returned %d\n", SIGCHLD, rc);
 
     ddbg_monitor_request_t request;
     while (!interrupted)
     {
-        int rc = read(context->monitor_pipe[0], &request, sizeof(ddbg_monitor_request_t));
+        errno = 0;
+        rc = read(context->monitor_pipe[0], &request, sizeof(ddbg_monitor_request_t));
+        if (errno == EAGAIN)
+            continue;
         if (rc == -1)
         {
             /* Closed pipe ?*/
-            fprintf(stderr, "Dyndebug monitoring read failure for %s, abort!\n",
+            error_print("Dyndebug monitoring read failure for %s, abort!\n",
                 context->monitored_process_name);
             interrupted = 1;
         } else if (rc == sizeof(ddbg_monitor_request_t))
@@ -104,24 +115,23 @@ void dyndebug_run_monitor(ddbg_context_t *context)
         } else if (rc > 0)
         {
             /* Didn't receive a full request, ignore it! */
-            fprintf(stderr, "Incomplete dyndebug monitoring request (%d vs %ld)"\
+            error_print("Incomplete dyndebug monitoring request (%d vs %ld)"\
                 " for %s, skipped\n", rc, sizeof(ddbg_monitor_request_t),
                 context->monitored_process_name);
         } /* else, nothing has been received */
     }
-    fprintf(stdout, "Dyndebug monitoring session for %s ended!\n",
+    debug_print("Dyndebug monitoring session for %s ended!\n",
         context->monitored_process_name);
 }
 
-static void on_monitored_death(int signum)
+static void on_monitored_signal(int signum)
 {
     assert(signum == SIGCHLD);
 
     ddbg_context_t *context = dyndebug_get_context();
     if (!context)
     {
-        fprintf(stdout, "Dyndebug monitoring session (pid %d) received SIGCHLD!\n",
-            getpid());
+        error_print("SIGCHLD received (pid %d) but no context found!\n", getpid());
         return;
     }
     int status;
@@ -132,59 +142,48 @@ static void on_monitored_death(int signum)
         if (WIFEXITED(status))
         {
             interrupted = 1;
-            printf("WIFEXITED(%d): waitpid(%d) returned %d -- %s\n",
+            debug_print("WIFEXITED(%d): waitpid(%d) returned %d -- %s\n",
                 WEXITSTATUS(status), context->monitored_pid, rc, strerror(errno));
         } else if (WIFSIGNALED(status))
         {
-            printf("WIFSIGNALED(%d): waitpid(%d) returned %d -- %s\n",
+            debug_print("WIFSIGNALED(%d): waitpid(%d) returned %d -- %s\n",
                 WTERMSIG(status), context->monitored_pid, rc, strerror(errno));
         } else if (WIFSTOPPED(status))
         {
-            printf("WIFSTOPPED(%d): waitpid(%d) returned %d -- %s\n",
+            debug_print("WIFSTOPPED(%d): waitpid(%d) returned %d -- %s\n",
                 WSTOPSIG(status), context->monitored_pid, rc, strerror(errno));
         } else if (WCOREDUMP(status))
         {
             interrupted = 1;
-            printf("WCOREDUMP: waitpid(%d) returned %d -- %s\n",
+            debug_print("WCOREDUMP: waitpid(%d) returned %d -- %s\n",
                 context->monitored_pid, rc, strerror(errno));
         } else if (WIFCONTINUED(status))
         {
-            printf("WIFCONTINUED: waitpid(%d) returned %d -- %s\n",
+            debug_print("WIFCONTINUED: waitpid(%d) returned %d -- %s\n",
                 context->monitored_pid, rc, strerror(errno));
         } else
-            printf("No status: waitpid(%d) returned %d -- %s\n",
+            debug_print("No status: waitpid(%d) returned %d -- %s\n",
                 context->monitored_pid, rc, strerror(errno));
     } else
-        fprintf(stdout, "Dyndebug monitoring session for %s received SIGCHLD "\
+        debug_print("Dyndebug monitoring session for %s received SIGCHLD "\
             "but waitpid returned %d!\n", context->monitored_process_name, rc);
-}
-
-uint64_t read_drx(pid_t pid, uint8_t x)
-{
-    assert(x < 8);
-    errno = 0;
-    uint64_t drx = ptrace( PTRACE_PEEKUSER, pid, offsetof(struct user, u_debugreg[x]), 0);
-    int errno_ = errno;
-    printf("ptrace( PTRACE_PEEKUSER, %d, offsetof(struct user, u_debugreg[%d])) returned %lx, errno %d -- %s\n",
-        pid, x, drx, errno_, strerror(errno_));
-    return drx;
 }
 
 static void handle_request(ddbg_context_t *context, ddbg_monitor_request_t *request)
 {
-    printf("New request operation %d\n", request->operation);
+    debug_print("New request operation %d\n", request->operation);
     /* Attach the process under debug */
     int rc = ptrace(PTRACE_ATTACH, context->monitored_pid, 0, 0);
     if (rc < 0)
     {
         if (errno == ESRCH)
         {
-            fprintf(stderr, "Monitored process %s died, interrupting the session\n",
+            error_print("Monitored process %s died, interrupting the session\n",
                 context->monitored_process_name);
             interrupted = true;
             return;
         }
-        fprintf(stderr, "Cannot attach to the monitored process %s -- %s\n",
+        error_print("Cannot attach to the monitored process %s -- %s\n",
             context->monitored_process_name, strerror(errno));
         interrupted = true;
         return;
@@ -194,42 +193,60 @@ static void handle_request(ddbg_context_t *context, ddbg_monitor_request_t *requ
     for (int attempts = 0 ; attempts < PTRACE_STOP_ATTEMPTS ; attempts++)
     {
         int status;
-        rc = waitpid(context->monitored_pid, &status, WNOHANG);
-        if (rc == context->monitored_pid) break;
+        rc = waitpid(context->monitored_pid, &status, 0); //WNOHANG);
+        if (rc == context->monitored_pid)
+        {
+            debug_print("Got the pid...\n");
+            break;
+        }
         if (rc == -1)
         {
-            fprintf(stderr, "Cannot wait for to the monitored process %s -- %s\n",
+            error_print("Cannot wait for to the monitored process %s -- %s\n",
                 context->monitored_process_name, strerror(errno));
         }
     }
 
     /* Interpret the request */
     ddbg_monitor_response_t response;
+    x86_breakpoint_control_t bp_control = {0};
     switch (request->operation)
     {
         case DDBG_ENABLE_BREAKPOINT:
-            fprintf(stdout, "%s:%d Enable breakpoint at %p\n", __func__, __LINE__,
+            debug_print("%s:%d Enable breakpoint at %p\n", __func__, __LINE__,
                     request->breakpoint.address);
             read_drx(context->monitored_pid, 6);
-            fprintf(stdout, "%s:%d Enable breakpoint at %p\n", __func__, __LINE__,
+            rc = write_drx(context->monitored_pid, 1, (uint64_t)request->breakpoint.address);
+            bp_control.l1 = 1;
+            bp_control.le = 1;
+            bp_control.ge = 1;
+            bp_control.rw1 = DDBG_BREAK_DATA_RDWR;
+            bp_control.len1 = DDBG_BREAK_1BYTE;
+            rc = write_drx(context->monitored_pid, 7, ((uint64_t*)&bp_control)[0]);
+            debug_print("%s:%d Enable breakpoint at %p\n", __func__, __LINE__,
                     request->breakpoint.address);
             response.result = DDBG_SUCCESS;
             break;
         case DDBG_DISABLE_BREAKPOINT:
-            fprintf(stdout, "Disable breakpoint at %p\n",
+            debug_print("Disable breakpoint at %p\n",
                     request->breakpoint.address);
             response.result = DDBG_SUCCESS;
             break;
         case DDBG_DISABLE_ALL_BREAKPOINTS:
-            fprintf(stdout, "Disable all the breakpoints\n");
+            debug_print("Disable all the breakpoints\n");
             response.result = DDBG_SUCCESS;
             break;
         case DDBG_GET_TRIGGERED_BREAKPOINT:
-            fprintf(stdout, "Get the triggered breakpoint\n");
+            debug_print("Get the triggered breakpoint\n");
+            uint64_t status = read_drx(context->monitored_pid, X86_DEBUG_STATUS_REG);
+            uint64_t dr1 = read_drx(context->monitored_pid, 1);
+            response.breakpoint.address = (void *)dr1;
+            response.breakpoint.type = DDBG_BREAK_DATA_WRITE;
+            response.breakpoint.size = DDBG_BREAK_1BYTE;
+            response.breakpoint.is_hw = true;
             response.result = DDBG_SUCCESS;
             break;
         default:
-            fprintf(stdout, "Unknown operation %d\n", request->operation);
+            debug_print("Unknown operation %d\n", request->operation);
             response.result = DDBG_MONITOR_REQUEST_UNKNOWN;
             break;
     }
@@ -240,12 +257,12 @@ static void handle_request(ddbg_context_t *context, ddbg_monitor_request_t *requ
     {
         if (errno == ESRCH)
         {
-            fprintf(stderr, "Monitored process %s died before we could detach it,"\
+            error_print("Monitored process %s died before we could detach it,"\
                 " interrupting the session\n", context->monitored_process_name);
             interrupted = true;
             return;
         }
-        fprintf(stderr, "Cannot attach to the monitored process %s -- %s\n",
+        error_print("Cannot attach to the monitored process %s -- %s\n",
             context->monitored_process_name, strerror(errno));
         interrupted = true;
         return;
@@ -255,7 +272,7 @@ static void handle_request(ddbg_context_t *context, ddbg_monitor_request_t *requ
     if (write(context->monitored_pipe[1], &response, sizeof(response)) !=
             sizeof(response))
     {
-        fprintf(stderr, "Cannot answer the monitored process %s -- %s\n",
+        error_print("Cannot answer the monitored process %s -- %s\n",
             context->monitored_process_name, strerror(errno));
         interrupted = true;
         return;

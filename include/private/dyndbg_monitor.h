@@ -3,9 +3,19 @@
 
 #include <dyndbg/dyndbg_us.h>
 
+#include <stdio.h>
+
 #define DYNDBG_MONITOR_PREFIX   "dyndbg_monitor_"
 #define HW_BREAKPOINTS_COUNT    4
 #define PTRACE_STOP_ATTEMPTS    4
+
+#if 0
+#define debug_print(fmt, args...)   printf("%s:%d: "fmt, __func__, __LINE__, ##args)
+#else
+#define debug_print(fmt, args...)
+#endif
+#define info_print(fmt, args...)    printf("%s:%d: "fmt, __func__, __LINE__, ##args)
+#define error_print(fmt, args...)   fprintf(stderr, "%s:%d: "fmt, __func__, __LINE__, ##args)
 
 typedef enum
 {

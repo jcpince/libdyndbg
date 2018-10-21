@@ -9,21 +9,18 @@
 #include <errno.h>
 
 volatile int idx;
-
-void sigint_handler(int signum)
-{
-    printf("Interrupted\n");
-}
+volatile bool stopped = false;
 
 void on_b0_triggerred()
 {
-    printf("b0 triggered\n");
+    printf("b0 triggered, idx is %d\n", idx);
+    stopped = true;
 }
 
 int main(int argc, const char **argv)
 {
     char data[1024];
-    signal(SIGINT, sigint_handler);
+    int loops = 0;
     ddbg_result_t result = dyndebug_start();
     printf("dyndebug_start() returned %d\n", result);
 
@@ -35,7 +32,17 @@ int main(int argc, const char **argv)
     result = dyndebug_enable_breakpoint(b0);
     printf("dyndebug_enable_breakpoint(b0) returned %d\n", result);
 
-    sleep(2);
+    while(!stopped && loops < 5)
+    {
+        data[idx++]++;
+        if (idx >= 1024)
+        {
+            idx = 0;
+            loops++;
+        }
+        usleep(500);
+    }
+
     printf("That's all folks!\n");
     return 0;
 }

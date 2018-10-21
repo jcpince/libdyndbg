@@ -7,11 +7,18 @@
 #include <errno.h>
 #include <stdio.h>
 
+static void on_trap(int signum);
+
 ddbg_result_t dyndebug_start(void)
 {
     ddbg_context_t *context = dyndebug_get_context();
     if (!context)
         return DDBG_CONTEXT_NOT_FOUND;
+
+
+    struct sigaction sa = {0};
+    sa.sa_handler = on_trap;
+    int rc = sigaction(SIGTRAP, &sa, NULL);
 
     /* Run the monitored process code */
     return DDBG_SUCCESS;
@@ -49,6 +56,17 @@ ddbg_result_t dyndebug_add_breakpoint(ddbg_breakpoint_t *new_bp, void *address,
     return DDBG_SUCCESS;
 }
 
+static void dump_breakpoints(ddbg_context_t *context)
+{
+    ddbg_breakpoint_t *current = context->breakpoints_root;
+    error_print("Breakpoints are:\n");
+    while (current)
+    {
+        error_print("current->address %p\n", current->address);
+        current = current->next;
+    }
+}
+
 ddbg_breakpoint_t *dyndebug_find_breakpoint(void *address, ddbg_btype_t type,
     ddbg_bsize_t size)
 {
@@ -64,6 +82,8 @@ ddbg_breakpoint_t *dyndebug_find_breakpoint(void *address, ddbg_btype_t type,
             return current;
         current = current->next;
     }
+    error_print("No breakpoint found at %p\n", address);
+    dump_breakpoints(context);
     return NULL;
 }
 
@@ -106,14 +126,14 @@ static void dyndebug_send_monitor_request(ddbg_context_t *context,
     if (write(context->monitor_pipe[1], request, sizeof(*request)) !=
             sizeof(*request))
     {
-        fprintf(stderr, "Cannot communicate with the monitor... -- %s\n",
+        error_print("Cannot communicate with the monitor... -- %s\n",
             strerror(errno));
         response->result = DDBG_MONITOR_COMM_FAILURE;
     }
     if (read(context->monitored_pipe[0], response, sizeof(*response)) !=
             sizeof(*response))
     {
-        fprintf(stderr, "Cannot read back from the monitor... -- %s\n",
+        error_print("Cannot read back from the monitor... -- %s\n",
             strerror(errno));
         response->result = DDBG_MONITOR_COMM_FAILURE;
     }
@@ -162,7 +182,7 @@ ddbg_result_t dyndebug_disable_all_breakpoint()
     return response.result;
 }
 
-void on_trap(int signum)
+static void on_trap(int signum)
 {
     if (signum != SIGTRAP)
         return;
@@ -170,7 +190,7 @@ void on_trap(int signum)
     ddbg_context_t *context = dyndebug_get_context();
     if (!context)
     {
-        fprintf(stderr, "SIGTRAP signal but context not found!\n");
+        error_print("SIGTRAP signal but context not found!\n");
         return;
     }
 
@@ -180,14 +200,14 @@ void on_trap(int signum)
     dyndebug_send_monitor_request(context, &request, &response);
     if (response.result != DDBG_SUCCESS)
     {
-        fprintf(stderr, "SIGTRAP signal reason not found!\n");
+        error_print("SIGTRAP signal reason not found!\n");
         return;
     }
     ddbg_breakpoint_t *b = dyndebug_find_breakpoint(response.breakpoint.address,
         response.breakpoint.type, response.breakpoint.size);
     if (!b)
     {
-        fprintf(stderr, "Breakpoint triggered but not found for (%p, %d, %d)...\n",
+        error_print("Breakpoint triggered but not found for (%p, %d, %d)...\n",
             response.breakpoint.address, response.breakpoint.type,
             response.breakpoint.size);
         return;
