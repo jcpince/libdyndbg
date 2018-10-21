@@ -41,7 +41,7 @@ ddbg_result_t dyndebug_add_breakpoint(ddbg_breakpoint_t *new_bp, void *address,
     if (!cb)
         return DDBG_SWBP_NOT_IMPLEMENTED;
 
-    if (dyndebug_find_breakpoint(address, type, size))
+    if (dyndebug_find_breakpoint(address, type, size, false))
         return DDBG_INVALID_ARGUMENT;
 
     new_bp->address = address;
@@ -53,7 +53,7 @@ ddbg_result_t dyndebug_add_breakpoint(ddbg_breakpoint_t *new_bp, void *address,
     new_bp->next = context->breakpoints_root;
     context->breakpoints_root = new_bp;
 
-    return DDBG_SUCCESS;
+    return dyndebug_enable_breakpoint(new_bp);
 }
 
 static void dump_breakpoints(ddbg_context_t *context)
@@ -68,7 +68,7 @@ static void dump_breakpoints(ddbg_context_t *context)
 }
 
 ddbg_breakpoint_t *dyndebug_find_breakpoint(void *address, ddbg_btype_t type,
-    ddbg_bsize_t size)
+    ddbg_bsize_t size, bool verbose)
 {
     ddbg_context_t *context = dyndebug_get_context();
     if (!context)
@@ -82,6 +82,8 @@ ddbg_breakpoint_t *dyndebug_find_breakpoint(void *address, ddbg_btype_t type,
             return current;
         current = current->next;
     }
+    if (!verbose) return NULL;
+
     error_print("No breakpoint found at %p\n", address);
     dump_breakpoints(context);
     return NULL;
@@ -98,6 +100,9 @@ ddbg_result_t dyndebug_remove_breakpoint(ddbg_breakpoint_t *b)
 
     if (!context->breakpoints_root)
         return DDBG_HWBP_NOT_FOUND;
+
+    /* Disable it before removal */
+    dyndebug_disable_breakpoint(b);
 
     if (b == context->breakpoints_root)
     {
@@ -146,6 +151,9 @@ static ddbg_result_t dyndebug_enable_disable_breakpoint(ddbg_breakpoint_t *b,
     if (!context)
         return DDBG_CONTEXT_NOT_FOUND;
 
+    if (b->enabled == enable)
+        return DDBG_SUCCESS;
+
     ddbg_monitor_request_t request;
     ddbg_monitor_response_t response;
     request.operation = enable ? DDBG_ENABLE_BREAKPOINT : DDBG_DISABLE_BREAKPOINT;
@@ -155,6 +163,10 @@ static ddbg_result_t dyndebug_enable_disable_breakpoint(ddbg_breakpoint_t *b,
     request.breakpoint.is_hw = b->is_hw;
 
     dyndebug_send_monitor_request(context, &request, &response);
+
+    /* bookkeeping */
+    if (response.result == DDBG_SUCCESS)
+        b->enabled = enable;
     return response.result;
 }
 
@@ -177,9 +189,18 @@ ddbg_result_t dyndebug_disable_all_breakpoint()
     ddbg_monitor_request_t request;
     ddbg_monitor_response_t response;
     request.operation = DDBG_DISABLE_ALL_BREAKPOINTS;
-
     dyndebug_send_monitor_request(context, &request, &response);
-    return response.result;
+    if (response.result != DDBG_SUCCESS)
+        return response.result;
+
+    /* bookkeeping */
+    ddbg_breakpoint_t *current = context->breakpoints_root;
+    while (current)
+    {
+        current->enabled = false;
+        current = current->next;
+    }
+    return DDBG_SUCCESS;
 }
 
 static void on_trap(int signum)
@@ -204,7 +225,7 @@ static void on_trap(int signum)
         return;
     }
     ddbg_breakpoint_t *b = dyndebug_find_breakpoint(response.breakpoint.address,
-        response.breakpoint.type, response.breakpoint.size);
+        response.breakpoint.type, response.breakpoint.size, false);
     if (!b)
     {
         error_print("Breakpoint triggered but not found for (%p, %d, %d)...\n",

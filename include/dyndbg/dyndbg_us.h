@@ -11,7 +11,7 @@ typedef void (*ddbg_bcallback_t)(struct ddbg_breakpoint_ *bp);
 
 typedef enum
 {
-    DDBG_SUCCESS = 0,
+    DDBG_SUCCESS = 100,
     DDBG_CONTEXT_NOT_FOUND,
     DDBG_START_FAILURE,
     DDBG_INVALID_ARGUMENT,
@@ -47,9 +47,10 @@ typedef struct ddbg_breakpoint_
     ddbg_bcallback_t        callback;
     void                    *callback_priv_arg;
     void                    *address;
-    ddbg_btype_t            type:8;
-    ddbg_bsize_t            size:8;
+    ddbg_btype_t            type:2;
+    ddbg_bsize_t            size:2;
     bool                    is_hw;
+    bool                    enabled;
 } ddbg_breakpoint_t;
 
 ddbg_result_t dyndebug_start(void);
@@ -57,7 +58,7 @@ ddbg_result_t dyndebug_add_breakpoint(ddbg_breakpoint_t *new_bp, void *address,
     ddbg_btype_t type, ddbg_bsize_t size, ddbg_bcallback_t cb, void *priv_arg,
     bool is_hw);
 ddbg_breakpoint_t *dyndebug_find_breakpoint(void *address, ddbg_btype_t type,
-    ddbg_bsize_t size);
+    ddbg_bsize_t size, bool verbose);
 ddbg_result_t dyndebug_remove_breakpoint(ddbg_breakpoint_t *b);
 ddbg_result_t dyndebug_enable_breakpoint(ddbg_breakpoint_t *b);
 ddbg_result_t dyndebug_disable_breakpoint(ddbg_breakpoint_t *b);

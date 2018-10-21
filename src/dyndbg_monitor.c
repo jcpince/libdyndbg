@@ -19,12 +19,18 @@
 volatile bool interrupted = 0;
 
 static void on_monitored_signal(int signum);
-static void handle_request(ddbg_context_t *context, ddbg_monitor_request_t *request);
+static void handle_request(ddbg_context_t *, ddbg_monitor_request_t *);
+static void setup_hw_breakpoint(pid_t , ddbg_monitor_request_t *,
+        ddbg_monitor_response_t *);
+static void prepare_trig_breakpt_response(pid_t , ddbg_monitor_response_t *);
 
 ddbg_context_t *dyndebug_get_context(void)
 {
     static ddbg_context_t *context = NULL;
     if (context) return context;
+
+    assert(sizeof(x86_breakpoint_control_t) == sizeof(uint64_t));
+    assert(sizeof(x86_breakpoint_status_t) == sizeof(uint64_t));
 
     if (!context)
         context = calloc(1, sizeof(ddbg_context_t));
@@ -190,21 +196,21 @@ static void handle_request(ddbg_context_t *context, ddbg_monitor_request_t *requ
     }
 
     /* Now, wait for the process to be stopped */
-    for (int attempts = 0 ; attempts < PTRACE_STOP_ATTEMPTS ; attempts++)
-    {
-        int status;
+    // for (int attempts = 0 ; attempts < PTRACE_STOP_ATTEMPTS ; attempts++)
+    // {
+    int status;
         rc = waitpid(context->monitored_pid, &status, 0); //WNOHANG);
         if (rc == context->monitored_pid)
         {
             debug_print("Got the pid...\n");
-            break;
+            //break;
         }
         if (rc == -1)
         {
             error_print("Cannot wait for to the monitored process %s -- %s\n",
                 context->monitored_process_name, strerror(errno));
         }
-    }
+    //}
 
     /* Interpret the request */
     ddbg_monitor_response_t response;
@@ -214,17 +220,18 @@ static void handle_request(ddbg_context_t *context, ddbg_monitor_request_t *requ
         case DDBG_ENABLE_BREAKPOINT:
             debug_print("%s:%d Enable breakpoint at %p\n", __func__, __LINE__,
                     request->breakpoint.address);
-            read_drx(context->monitored_pid, 6);
-            rc = write_drx(context->monitored_pid, 1, (uint64_t)request->breakpoint.address);
-            bp_control.l1 = 1;
-            bp_control.le = 1;
-            bp_control.ge = 1;
-            bp_control.rw1 = DDBG_BREAK_DATA_RDWR;
-            bp_control.len1 = DDBG_BREAK_1BYTE;
-            rc = write_drx(context->monitored_pid, 7, ((uint64_t*)&bp_control)[0]);
+            // read_drx(context->monitored_pid, 6);
+            // rc = write_drx(context->monitored_pid, 1, (uint64_t)request->breakpoint.address);
+            // bp_control.l1 = 1;
+            // bp_control.le = 1;
+            // bp_control.ge = 1;
+            // bp_control.rw1 = DDBG_BREAK_DATA_RDWR;
+            // bp_control.len1 = DDBG_BREAK_1BYTE;
+            // rc = write_drx(context->monitored_pid, 7, ((uint64_t*)&bp_control)[0]);
+            setup_hw_breakpoint(context->monitored_pid, request, &response);
             debug_print("%s:%d Enable breakpoint at %p\n", __func__, __LINE__,
                     request->breakpoint.address);
-            response.result = DDBG_SUCCESS;
+            //response.result = DDBG_SUCCESS;
             break;
         case DDBG_DISABLE_BREAKPOINT:
             debug_print("Disable breakpoint at %p\n",
@@ -237,13 +244,7 @@ static void handle_request(ddbg_context_t *context, ddbg_monitor_request_t *requ
             break;
         case DDBG_GET_TRIGGERED_BREAKPOINT:
             debug_print("Get the triggered breakpoint\n");
-            uint64_t status = read_drx(context->monitored_pid, X86_DEBUG_STATUS_REG);
-            uint64_t dr1 = read_drx(context->monitored_pid, 1);
-            response.breakpoint.address = (void *)dr1;
-            response.breakpoint.type = DDBG_BREAK_DATA_WRITE;
-            response.breakpoint.size = DDBG_BREAK_1BYTE;
-            response.breakpoint.is_hw = true;
-            response.result = DDBG_SUCCESS;
+            prepare_trig_breakpt_response(context->monitored_pid, &response);
             break;
         default:
             debug_print("Unknown operation %d\n", request->operation);
@@ -279,48 +280,115 @@ static void handle_request(ddbg_context_t *context, ddbg_monitor_request_t *requ
     }
 }
 
-#if 0
-void interpret_request(ddbg_monitor_request_t *request,
+static void setup_hw_breakpoint(pid_t pid, ddbg_monitor_request_t *request,
         ddbg_monitor_response_t *response)
 {
-    if (!request->breakpoint.is_hw)
+    x86_breakpoint_control_t control = x86_read_dr_control(pid);
+    if (!X86_DBG_CONTROL_VALID(control))
     {
-        response->result = DDBG_SWBP_NOT_IMPLEMENTED;
+        response->result = (ddbg_result_t)errno;
         return;
     }
-
-    /* Disable the breakpoint */
-    if (!request->enabled)
+    x86_breakpoint_register_t breakpoint;
+    if (!control.l0)
     {
-        for (; hw_idx < HW_BREAKPOINTS_COUNT ; hw_idx++)
-        {
-            ddbg_breakpoint_t *active_hwb = context->active_hw_breakpoints[hw_idx];
-            if  (active_hwb && (active_hwb->address == request->address) &&
-                (active_hwb->type == request->type) && (active_hwb->size == request->size))
-            {
-                context->active_hw_breakpoints[hw_idx] = NULL;
-                response.result = DDBG_SUCCESS;
-                return;
-            }
-        }
-        response.result = DDBG_HWBP_NOT_FOUND;
+        control.l0 = 1;
+        control.rw0 = request->breakpoint.type;
+        control.len0 = request->breakpoint.size;
+        breakpoint = X86_HW_BREAKPOINT_0;
+    } else if (!control.l1)
+    {
+        control.l1 = 1;
+        control.rw1 = request->breakpoint.type;
+        control.len1 = request->breakpoint.size;
+        breakpoint = X86_HW_BREAKPOINT_1;
+    } else if (!control.l2)
+    {
+        control.l2 = 1;
+        control.rw2 = request->breakpoint.type;
+        control.len2 = request->breakpoint.size;
+        breakpoint = X86_HW_BREAKPOINT_2;
+    } else if (!control.l3)
+    {
+        control.l3 = 1;
+        control.rw3 = request->breakpoint.type;
+        control.len3 = request->breakpoint.size;
+        breakpoint = X86_HW_BREAKPOINT_3;
+    }
+    else
+    {
+        response->result = DDBG_ALL_HWBP_BUSY;
         return;
     }
-
-    /* Enable the breakpoint */
-    for (; hw_idx < HW_BREAKPOINTS_COUNT ; hw_idx++)
+    if (x86_write_drx(pid, breakpoint, (uint64_t)request->breakpoint.address))
     {
-        if (!context->active_hw_breakpoints[hw_idx])
-            break;
-    }
-    if (hw_idx == HW_BREAKPOINTS_COUNT)
-    {
-        response.result = DDBG_ALL_HWBP_BUSY;
+        response->result = (ddbg_result_t)errno;
         return;
     }
-
-    /* Found a slot for our new breakpoint */
-    context->active_hw_breakpoints[hw_idx] = b;
-    b->hw_index = hw_idx;
+    response->result = (x86_write_dr_control(pid, control) == 0 ?
+        DDBG_SUCCESS : (ddbg_result_t)errno);
 }
-#endif
+
+static void prepare_trig_breakpt_response(pid_t pid,
+        ddbg_monitor_response_t *response)
+{
+    x86_breakpoint_status_t status = x86_read_dr_status(pid);
+    if (!X86_DBG_STATUS_VALID(status))
+    {
+        response->result = (ddbg_result_t)errno;
+        return;
+    }
+    /* Clear the status register */
+    x86_breakpoint_status_t clear_mask = {.rtm=1};
+    if (x86_write_dr_status(pid, clear_mask))
+    {
+        response->result = (ddbg_result_t)errno;
+        return;
+    }
+
+    x86_breakpoint_control_t control = x86_read_dr_control(pid);
+    if (!X86_DBG_CONTROL_VALID(control))
+    {
+        response->result = (ddbg_result_t)errno;
+        return;
+    }
+    x86_breakpoint_register_t reg;
+    ddbg_btype_t type;
+    ddbg_bsize_t size;
+    if (status.b0)
+    {
+        reg = X86_HW_BREAKPOINT_0;
+        type = control.rw0;
+        size = control.len0;
+    }
+    else if (status.b1)
+    {
+        reg = X86_HW_BREAKPOINT_1;
+        type = control.rw1;
+        size = control.len1;
+    }
+    else if (status.b2)
+    {
+        reg = X86_HW_BREAKPOINT_2;
+        type = control.rw2;
+        size = control.len2;
+    }
+    else if (status.b3)
+    {
+        reg = X86_HW_BREAKPOINT_3;
+        type = control.rw3;
+        size = control.len3;
+    }
+    else
+    {
+        error_print("Trap exception but no breakpt triggered, status is 0x%lx\n",
+            *((uint64_t*)&status));
+        return;
+    }
+    uint64_t drx = x86_read_drx(pid, reg);
+    response->breakpoint.address = (void *)drx;
+    response->breakpoint.type = type;
+    response->breakpoint.size = size;
+    response->breakpoint.is_hw = true;
+    response->result = DDBG_SUCCESS;
+}

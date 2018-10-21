@@ -6,6 +6,7 @@ include_directories(${CMAKE_CURRENT_LIST_DIR}/include)
 add_library(dyndbg SHARED "")
 add_library(dyndbg_static STATIC "")
 set_target_properties(dyndbg_static PROPERTIES OUTPUT_NAME dyndbg)
+target_compile_options(dyndbg PRIVATE "-ggdb3")
 
 target_sources(dyndbg
     PRIVATE
@@ -26,6 +27,7 @@ target_sources(dyndbg_static
 
 add_executable(unit_test ${CMAKE_CURRENT_LIST_DIR}/tests/test.c)
 target_link_libraries(unit_test dyndbg)
+target_compile_options(unit_test PUBLIC "-ggdb3")
 
 add_executable(unit_test_static ${CMAKE_CURRENT_LIST_DIR}/tests/test.c)
 target_link_libraries(unit_test_static dyndbg_static)
