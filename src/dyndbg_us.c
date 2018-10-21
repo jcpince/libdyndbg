@@ -151,6 +151,16 @@ static ddbg_result_t dyndebug_enable_disable_breakpoint(ddbg_breakpoint_t *b,
     if (!context)
         return DDBG_CONTEXT_NOT_FOUND;
 
+    ddbg_breakpoint_t *current = context->breakpoints_root;
+    while (current)
+    {
+        if (current == b)
+            break;
+        current = current->next;
+    }
+    if (!current)
+        return DDBG_HWBP_NOT_FOUND;
+
     if (b->enabled == enable)
         return DDBG_SUCCESS;
 
