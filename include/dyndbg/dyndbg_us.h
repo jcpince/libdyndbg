@@ -8,6 +8,7 @@
 struct ddbg_breakpoint_;
 
 typedef void (*ddbg_bcallback_t)(struct ddbg_breakpoint_ *bp);
+typedef void (*ddbg_crash_callback_t)(int signum, void *ucontext);
 
 typedef enum
 {
@@ -23,6 +24,7 @@ typedef enum
     DDBG_MONITOR_RESPONSE_FAILURE,
     DDBG_MONITOR_COMM_FAILURE,
     DDBG_MONITOR_REQUEST_UNKNOWN,
+    DDBG_SYSTEM_ERROR,
 } ddbg_result_t;
 
 typedef enum
@@ -53,7 +55,8 @@ typedef struct ddbg_breakpoint_
     bool                    enabled;
 } ddbg_breakpoint_t;
 
-ddbg_result_t dyndebug_start(void);
+ddbg_result_t dyndebug_start_monitor(void);
+ddbg_result_t dyndebug_install_crash_handler(ddbg_crash_callback_t cb);
 ddbg_result_t dyndebug_add_breakpoint(ddbg_breakpoint_t *new_bp, void *address,
     ddbg_btype_t type, ddbg_bsize_t size, ddbg_bcallback_t cb, void *priv_arg,
     bool is_hw);

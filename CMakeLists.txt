@@ -11,6 +11,7 @@ target_compile_options(dyndbg PRIVATE "-ggdb3")
 target_sources(dyndbg
     PRIVATE
         ${CMAKE_CURRENT_LIST_DIR}/src/dyndbg_us.c
+        ${CMAKE_CURRENT_LIST_DIR}/src/dyndbg_crash.c
         ${CMAKE_CURRENT_LIST_DIR}/src/dyndbg_monitor.c
         ${CMAKE_CURRENT_LIST_DIR}/include/private/dyndbg_monitor.h
     PUBLIC
@@ -19,6 +20,7 @@ target_sources(dyndbg
 target_sources(dyndbg_static
     PRIVATE
         ${CMAKE_CURRENT_LIST_DIR}/src/dyndbg_us.c
+        ${CMAKE_CURRENT_LIST_DIR}/src/dyndbg_crash.c
         ${CMAKE_CURRENT_LIST_DIR}/src/dyndbg_monitor.c
         ${CMAKE_CURRENT_LIST_DIR}/include/private/dyndbg_monitor.h
     PUBLIC

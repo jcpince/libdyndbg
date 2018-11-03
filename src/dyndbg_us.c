@@ -9,16 +9,23 @@
 
 static void on_trap(int signum);
 
-ddbg_result_t dyndebug_start(void)
+ddbg_result_t dyndebug_start_monitor(void)
 {
     ddbg_context_t *context = dyndebug_get_context();
     if (!context)
         return DDBG_CONTEXT_NOT_FOUND;
 
-
     struct sigaction sa = {0};
     sa.sa_handler = on_trap;
     int rc = sigaction(SIGTRAP, &sa, NULL);
+    if (rc)
+    {
+        rc = errno;
+        error_print("Cannot install the trap handler -- %s\n",
+            strerror(errno));
+        errno = rc;
+        return DDBG_SYSTEM_ERROR;
+    }
 
     /* Run the monitored process code */
     return DDBG_SUCCESS;

@@ -1,18 +1,21 @@
 #include <dyndbg/dyndbg_us.h>
 
+#include <stdio.h>
+
+#define __USE_GNU
+#include <ucontext.h>
+
 #include <assert.h>
 #include <string.h>
 #include <stdlib.h>
 #include <unistd.h>
 #include <signal.h>
-#include <stdio.h>
 #include <errno.h>
 
-volatile int idx;
+volatile uint64_t idx;
 volatile int b0_count = 0;
 volatile int b1_count = 0;
 volatile int b2_count = 0;
-
 
 #define test_assert(under_test, expect)                                         \
     {                                                                           \
@@ -56,12 +59,55 @@ int func(void)
     return 0;
 }
 
+void crash_callback(int signum, void *_ucontext)
+{
+    ucontext_t *ucontext = _ucontext;
+
+    if (signum == SIGFPE)
+        ucontext->uc_mcontext.gregs[REG_RCX] = 1;
+    else if (signum == SIGILL)
+        ucontext->uc_mcontext.gregs[REG_RIP] += 2;
+    else
+    {
+        fprintf(stderr, "%s(%p) called, set rax from 0x%llx to %p.\n", __func__,
+            ucontext, ucontext->uc_mcontext.gregs[REG_RAX], &idx);
+        ucontext->uc_mcontext.gregs[REG_RAX] = (uint64_t)&idx;
+    }
+}
+
 int main(int argc, const char **argv)
 {
     char data[1024];
     int loops = 0, rc;
 
-    test_assert(dyndebug_start(), DDBG_SUCCESS);
+    dyndebug_install_crash_handler(crash_callback);
+
+    /* SIGSEGV */
+    register long *prax __asm__("rax") = (long*)5;
+    prax[0] = 0xDEADDEAD;
+    prax = (long*)5;
+    rc = prax[0];
+
+    /* SIGBUS */
+    /* Set x86 alignment check */
+    __asm__("pushf\n"
+            "xorl $0x40000,(%rsp)\n"
+            "popf\n");
+    prax = (long*)&data[3];
+    __asm__("movq $0x5, (%rax)\n");
+    /* Reset x86 alignment check for printing. */
+    __asm__("pushf\n"
+            "xorl $0x40000,(%rsp)\n"
+            "popf\n");
+
+    /* SIGFPE */
+    register long rcx __asm__("rcx") = 0;
+    __asm__("cltd\n idiv %rcx\n cltq\n");
+
+    /* SIGILL */
+    __asm__("ud2\n");
+
+    test_assert(dyndebug_start_monitor(), DDBG_SUCCESS);
 
     ddbg_breakpoint_t _b0, *b0 = &_b0, _b1, *b1 = &_b1, _b2, *b2 = &_b2;
     test_assert(dyndebug_disable_breakpoint(b1), DDBG_HWBP_NOT_FOUND);
