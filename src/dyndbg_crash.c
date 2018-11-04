@@ -11,6 +11,10 @@
 #include <errno.h>
 
 #define MAX_BACKTRACE_DEPTH 256
+#define MAX_STACKDUMP_DEPTH 512
+
+#define min(a, b) ((a) < (b) ? (a) : (b))
+
 enum X86_TRAPNO
 {
     TRAPONO_DIV0                = 0x0,
@@ -82,6 +86,26 @@ ddbg_result_t dyndebug_install_crash_handler(ddbg_crash_callback_t cb)
     return DDBG_SUCCESS;
 }
 
+void dump_stack(mcontext_t *mcontext)
+{
+    greg_t *r = mcontext->gregs;
+    fprintf(stderr, "\nPartial stack dump (upper bytes more recent):\n");
+    int stack_size = min(MAX_STACKDUMP_DEPTH, r[REG_RBP] - r[REG_RSP]);
+    uint64_t *stack_bottom = (uint64_t*)((uint8_t *)r[REG_RSP] - stack_size);
+    fprintf(stderr, "Dumping %d bytes from %p to %p\n", stack_size, stack_bottom,
+        stack_bottom+stack_size);
+    stack_size /= sizeof(void*);
+    for ( ; stack_size > 0 ; stack_size--)
+    {
+        fprintf(stderr, "%p: ", stack_bottom);
+        void *array[1];
+        array[0] = (void*)(*stack_bottom);
+        backtrace_symbols_fd(array, 1, fileno(stderr));
+        stack_bottom++;
+    }
+
+}
+
 void dump_registers(mcontext_t *mcontext)
 {
     greg_t *r = mcontext->gregs;
@@ -95,6 +119,9 @@ void dump_registers(mcontext_t *mcontext)
     fprintf(stderr, "R14  0x%016llx, R15  0x%016llx\n", r[REG_R14], r[REG_R15]);
     fprintf(stderr, "RBP  0x%016llx, RSP  0x%016llx\n", r[REG_RBP], r[REG_RSP]);
     fprintf(stderr, "RIP  0x%016llx, EFL  0x%016llx, CR2  0x%016llx\n", r[REG_RIP], r[REG_EFL], r[REG_CR2]);
+
+    fprintf(stderr, "\nSymbols associated with the registers:\n");
+    backtrace_symbols_fd((void*)r, NGREG, fileno(stderr));
 }
 
 void print_error(uint64_t error)
@@ -173,9 +200,10 @@ void dyndebug_on_crash(int signum, siginfo_t *info, void *_ucontext)
     /* print directly to avoid malloc and ignore the first 2 which are related
     to the signal handling */
     fprintf(stderr, "Error Callstack:\n");
-    backtrace_symbols_fd(&backtrace_array[2], backtrace_size-2, fileno(stderr));;
+    backtrace_symbols_fd(&backtrace_array[2], backtrace_size-2, fileno(stderr));
 
     dump_registers(&ucontext->uc_mcontext);
+    dump_stack(&ucontext->uc_mcontext);
     if (crash_callback)
     {
         crash_callback(signum, ucontext);
